@@ -24,7 +24,7 @@ end $$;
 
 -- وقت التعديل يُضبط من الخادم دائمًا ليعتمد عليه السحب بين الأجهزة
 create or replace function public.touch_updated_at() returns trigger
-language plpgsql as $$
+language plpgsql set search_path = '' as $$
 begin
   new.updated_at := now();
   return new;
