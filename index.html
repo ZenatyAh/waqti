@@ -1562,8 +1562,12 @@ function viewSettings(){
   if(!CLOUD.on) acc='<p class="muted">لتفعيل التخزين السحابي أضف رابط مشروع Supabase والمفتاح العام في ملف <span class="num">config.js</span> (الخطوات في README.md). حتى ذلك الحين بياناتك تُحفظ على هذا الجهاز فقط.</p>';
   else if(!CLOUD.user) acc=row('البريد الإلكتروني','','<input type="text" id="cEmail" inputmode="email" autocomplete="username" dir="ltr" value="'+esc(S.sync.email)+'" aria-label="البريد الإلكتروني">')
     +row('كلمة المرور','6 خانات على الأقل','<input type="password" id="cPass" autocomplete="current-password" dir="ltr" aria-label="كلمة المرور" style="width:100%;min-height:38px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink)">')
-    +row('<span id="cloudStat">'+esc(CLOUD_LBL[CLOUD.state])+'</span>','','<button class="btn primary" data-act="cloud-in">تسجيل الدخول</button><button class="btn" data-act="cloud-up">إنشاء حساب</button>');
-  else acc=row('الحساب','<span class="num">'+esc(CLOUD.user.email||'')+'</span>','<button class="btn" data-act="cloud-out">تسجيل الخروج</button>')
+    +row('<span id="cloudStat">'+esc(CLOUD_LBL[CLOUD.state])+'</span>','','<button class="btn primary" data-act="cloud-in">تسجيل الدخول</button><button class="btn" data-act="cloud-up">إنشاء حساب</button>')
+    +row('نسيت كلمة المرور؟','أدخل بريدك أعلاه وسنرسل لك رابطًا لتعيينها من جديد','<button class="btn" data-act="cloud-reset">إرسال رابط الاستعادة</button>');
+  else acc=(CLOUD.recovery?'<div class="note" style="margin:0 0 10px">تم التحقق من رابط الاستعادة. اختر كلمة مرور جديدة لحسابك.</div>':'')
+    +row('الحساب','<span class="num">'+esc(CLOUD.user.email||'')+'</span>','<button class="btn" data-act="cloud-out">تسجيل الخروج</button>')
+    +row(CLOUD.recovery?'كلمة المرور الجديدة':'تغيير كلمة المرور','6 خانات على الأقل','<input type="password" id="cNewPass" autocomplete="new-password" dir="ltr" aria-label="كلمة المرور الجديدة" style="width:100%;min-height:38px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink)">')
+    +row('','','<button class="btn primary" data-act="cloud-newpass">حفظ كلمة المرور</button>')
     +row('<span id="cloudStat">'+esc(CLOUD_LBL[CLOUD.state])+'</span>',CLOUD.lastOk?'آخر مزامنة: '+esc(fmtClock(new Date(CLOUD.lastOk))):'','<button class="btn" data-act="cloud-sync">مزامنة الآن</button>');
   if(CLOUD.user&&CLOUD.missing.size) acc+='<div class="note" style="margin:10px 0 0">جداول العادات والأهداف والمذكرة غير موجودة في Supabase بعد. شغّل ملف supabase/schema.sql مرة واحدة في SQL Editor ثم اضغط «مزامنة الآن». حتى ذلك الحين تُحفظ هذه البيانات على هذا الجهاز فقط، وباقي المزامنة يعمل طبيعيًا.</div>';
   h+='<div class="sgroup panel"><h3>الحساب والمزامنة</h3>'+acc+'</div>';
@@ -1744,6 +1748,7 @@ const ACT={
   },
   'import':()=>$('#impFile').click(),
   'cloud-in':()=>cloudAuth('in'),'cloud-up':()=>cloudAuth('up'),
+  'cloud-reset':()=>cloudReset(),'cloud-newpass':()=>cloudNewPass(),
   'cloud-out':()=>cloudSignOut(),'cloud-sync':()=>syncNow(true)
 };
 const CH={
@@ -1945,12 +1950,32 @@ async function cloudInit(){
   CLOUD.sb=window.supabase.createClient(CFG.SUPABASE_URL,CFG.SUPABASE_ANON_KEY,{auth:{persistSession:true,autoRefreshToken:true}});
   CLOUD.sb.auth.onAuthStateChange((ev,sess)=>{
     CLOUD.user=sess?sess.user:null;
+    if(ev==='PASSWORD_RECOVERY'){CLOUD.recovery=true;UI.view='settings';}
+    else if(ev==='SIGNED_OUT') CLOUD.recovery=false;
     setTimeout(()=>{
       if(CLOUD.user){S.sync.email=CLOUD.user.email||'';setCloud('idle');syncNow();}
       else{setCloud('signedout');if(!CLOUD.ready){CLOUD.ready=true;ensureDaily();if(UI.view==='dashboard')render();}}
       if(UI.view==='settings') render();
     },0);
   });
+}
+async function cloudReset(){
+  if(!CLOUD.sb){toast('مكتبة السحابة لم تُحمَّل بعد. تحقق من الاتصال');return;}
+  const em=$('#cEmail').value.trim();
+  if(!em){toast('أدخل بريدك الإلكتروني أولًا');return;}
+  const r=await CLOUD.sb.auth.resetPasswordForEmail(em,{redirectTo:location.origin+location.pathname});
+  if(r.error){toast('تعذّر الأمر: '+r.error.message);return;}
+  toast('إن كان البريد مسجّلًا فقد أرسلنا إليه رابط استعادة كلمة المرور');
+}
+async function cloudNewPass(){
+  if(!CLOUD.sb||!CLOUD.user) return;
+  const pw=$('#cNewPass').value;
+  if(pw.length<6){toast('كلمة المرور 6 خانات على الأقل');return;}
+  const r=await CLOUD.sb.auth.updateUser({password:pw});
+  if(r.error){toast('تعذّر الأمر: '+r.error.message);return;}
+  CLOUD.recovery=false;$('#cNewPass').value='';
+  toast('تم تغيير كلمة المرور');
+  if(UI.view==='settings') render();
 }
 async function cloudAuth(mode){
   if(!CLOUD.sb){toast('مكتبة السحابة لم تُحمَّل بعد. تحقق من الاتصال');return;}
