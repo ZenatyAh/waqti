@@ -157,7 +157,7 @@ textarea{resize:vertical;min-height:70px}
 .fc{padding:4px 12px;border-radius:999px;border:1px solid var(--line);background:var(--surface);font-size:13px}
 .fc.on{background:var(--accent);border-color:transparent;color:var(--on-accent)}
 .filters select,.filters input{width:auto;min-width:150px;flex:1 1 150px;max-width:260px}
-.board{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:start}
+.board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;align-items:start}
 .col{background:var(--surface2);border-radius:12px;padding:10px;display:grid;gap:10px;align-content:start;min-height:140px}
 .col.over{outline:2px dashed var(--accent)}
 .col-h{display:flex;align-items:center;justify-content:space-between;padding:2px 4px}
@@ -328,6 +328,7 @@ input[type=color]{width:44px;height:38px;padding:2px;border:1px solid var(--line
   .toasts{bottom:calc(84px + env(safe-area-inset-bottom,0px))}
   .board{grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:88%;overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:6px}
   .col{scroll-snap-align:start}
+  .col[data-status="backlog"]{order:4}
   .pomo{grid-template-columns:minmax(0,1fr)}
   .pstrip{grid-template-columns:repeat(3,minmax(0,1fr))}
   .srow{grid-template-columns:minmax(0,1fr)}
@@ -463,7 +464,7 @@ const catColor=k=>CATS[k]?'var('+CATS[k][1]+')':(customCat(k)?safeColor(customCa
 const MOODS=['','😞','😕','😐','🙂','😄'], MOOD_N=['','سيئ','متعب','عادي','جيد','ممتاز'];
 const PRIOS={urgent:'عاجل',high:'مهم',normal:'عادي'};
 const PO={urgent:0,high:1,normal:2};
-const STAT={todo:'قيد الانتظار',doing:'جاري',done:'منتهي'};
+const STAT={backlog:'لاحقًا',todo:'قيد الانتظار',doing:'جاري',done:'منتهي'};
 const REPEATS={none:'بدون تكرار',daily:'يوميًا',weekly:'أسبوعيًا'};
 const MODES={work:'تركيز',short:'استراحة قصيرة',long:'استراحة طويلة','break':'استراحة الصلاة'};
 const METHODS=[[3,'رابطة العالم الإسلامي'],[4,'جامعة أم القرى'],[5,'الهيئة المصرية العامة للمساحة'],[2,'أمريكا الشمالية (ISNA)'],[1,'جامعة العلوم الإسلامية بكراتشي'],[8,'منطقة الخليج'],[9,'الكويت'],[10,'قطر'],[13,'رئاسة الشؤون الدينية (تركيا)'],[12,'اتحاد المنظمات الإسلامية بفرنسا']];
@@ -490,6 +491,7 @@ const IC={
   book:'<path d="M5 4h12a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2z"/><path d="M5 18a2 2 0 0 1 2-2h12M9 8h6"/>',
   award:'<circle cx="12" cy="9" r="6"/><path d="M8.5 14L7 22l5-3 5 3-1.5-8"/>',
   minus:'<path d="M5 12h14"/>',
+  later:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   left:'<path d="M15 6l-6 6 6 6"/>',
   right:'<path d="M9 6l6 6-6 6"/>'
 };
@@ -676,7 +678,7 @@ function setStatus(id,st){
     if(S.timer&&S.timer.taskId===id){ if(S.timer.by==='pomo') pomoPause(); else stopTimer(); }
     t.status='done'; t.doneAt=Date.now(); spawnRepeat(t);
     toast('أحسنت، أُنجزت: '+t.title);
-  }else{ if(t.status==='done') unspawnRepeat(t); t.status=st; t.doneAt=null; }
+  }else{ if(t.status==='done') unspawnRepeat(t); if(st==='backlog') releaseTask(id); t.status=st; t.doneAt=null; }
   save(); render();
 }
 /* فك ارتباط المهمة بالمؤقتات قبل حذفها. إن كانت داخل جلسة بومودورو جارية تكمل الجلسة كتركيز عام حتى لا يضيع وقتها */
@@ -699,7 +701,7 @@ function seed(){
   ex('مشي ورياضة خفيفة','health','asr',30);
   ex('جلسة قراءة مع العائلة','family','maghrib',40);
   ex('مراجعة اليوم وتخطيط الغد','personal','isha',15);
-  ex('فكرة: ترتيب المكتبة','personal','',0);
+  ex('فكرة: ترتيب المكتبة','personal','',0,'backlog');
   S.seeded=true; save();
 }
 function moveOverdue(k){
@@ -1099,11 +1101,12 @@ function filtered(){
 }
 function cardHTML(t){
   const run=S.timer&&S.timer.taskId===t.id, spent=taskSpent(t);
-  const pr=PERIODS.find(p=>p.k===t.period), late=t.due&&t.due<todayKey()&&t.status!=='done';
+  const pr=PERIODS.find(p=>p.k===t.period), late=t.due&&t.due<todayKey()&&t.status!=='done'&&t.status!=='backlog';
   const sd=(t.subs||[]).filter(s=>s.d).length, st=(t.subs||[]).length;
   const pct=t.est?Math.min(100,spent/60/t.est*100):0;
   let next='';
-  if(t.status==='todo') next='<button class="btn" data-act="task-status" data-id="'+t.id+'" data-st="doing">ابدأ</button>';
+  if(t.status==='backlog') next='<button class="btn" data-act="task-status" data-id="'+t.id+'" data-st="todo">للانتظار</button>';
+  else if(t.status==='todo') next='<button class="btn" data-act="task-status" data-id="'+t.id+'" data-st="doing">ابدأ</button>';
   else if(t.status==='doing') next='<button class="btn primary" data-act="task-status" data-id="'+t.id+'" data-st="done">'+ic('check',14)+' تم</button>';
   else next='<button class="btn ghost" data-act="task-status" data-id="'+t.id+'" data-st="todo">إرجاع</button>';
   return '<article class="card'+(t.status==='done'?' done':'')+(run?' running':'')+'" draggable="true" data-id="'+t.id+'" style="--cat:'+catColor(t.cat)+'">'
@@ -1122,7 +1125,8 @@ function cardHTML(t){
     +(t.est?'<div class="c-prog"><div class="meter" style="--pc:var(--accent)"><i style="width:'+pct.toFixed(0)+'%"></i></div><span>الفعلي <span class="num" data-live="task" data-id="'+t.id+'">'+fmtDur(spent)+'</span> من المتوقع <span class="num">'+fmtMin(t.est)+'</span></span></div>':'')
     +'<div class="c-act">'+next+'<span class="grow"></span>'
       +(!t.est&&(spent>0||run)?'<span class="c-time num" data-live="task" data-id="'+t.id+'">'+fmtDur(spent)+'</span>':'')
-      +(t.status!=='done'?'<button class="iconbtn'+(run?' on':'')+'" data-act="task-timer" data-id="'+t.id+'" aria-label="'+(run?'إيقاف':'بدء')+' المؤقت">'+(run?ic('pause',16):ic('play',16))+'</button>':'')
+      +(t.status!=='done'&&t.status!=='backlog'?'<button class="iconbtn'+(run?' on':'')+'" data-act="task-timer" data-id="'+t.id+'" aria-label="'+(run?'إيقاف':'بدء')+' المؤقت">'+(run?ic('pause',16):ic('play',16))+'</button>':'')
+      +(t.status==='todo'?'<button class="iconbtn" data-act="task-status" data-id="'+t.id+'" data-st="backlog" aria-label="تأجيل إلى لاحقًا" title="لاحقًا">'+ic('later',16)+'</button>':'')
       +'<button class="iconbtn" data-act="task-edit" data-id="'+t.id+'" aria-label="تعديل">'+ic('edit',16)+'</button></div></article>';
 }
 /* عمود «منتهي» يعرض ما أُنجز اليوم فقط، وما أُنجز قبل ذلك ينتقل إلى الأرشيف أسفل اللوحة */
@@ -1143,13 +1147,13 @@ function archiveHTML(arch){
 }
 function colsHTML(){
   const list=filtered(); let h='', arch=[];
-  for(const st of ['todo','doing','done']){
+  for(const st of ['backlog','todo','doing','done']){
     let items=list.filter(t=>t.status===st);
     if(st==='done'){arch=items.filter(t=>!isDoneToday(t));items=items.filter(isDoneToday).sort((a,b)=>b.doneAt-a.doneAt);}
     else items.sort((a,b)=>PO[a.prio]-PO[b.prio]||a.created-b.created);
     h+='<section class="col" data-status="'+st+'" aria-label="'+STAT[st]+'"><div class="col-h"><h3>'+(st==='done'?'منتهي اليوم':STAT[st])+'<span class="cnt num">'+items.length+'</span></h3>'
       +(st!=='done'?'<button class="iconbtn sm" data-act="task-new" data-status="'+st+'" aria-label="مهمة جديدة في '+STAT[st]+'">'+ic('plus',14)+'</button>':'')+'</div>'
-      +(items.length?items.map(cardHTML).join(''):'<div class="empty">'+(st==='todo'?'اسحب مهمة إلى هنا أو أضف جديدة':st==='doing'?'ما في مهمة جارية الآن':'لم تُنجز شيئًا اليوم بعد')+'</div>')
+      +(items.length?items.map(cardHTML).join(''):'<div class="empty">'+(st==='backlog'?'أفكار ومهام للمستقبل. انقلها إلى «قيد الانتظار» حين تصير جاهزة':st==='todo'?'اسحب مهمة إلى هنا أو أضف جديدة':st==='doing'?'ما في مهمة جارية الآن':'لم تُنجز شيئًا اليوم بعد')+'</div>')
       +((st==='done'&&arch.length)?'<button class="link" data-act="archive">'+(UI.archive?'إخفاء الأرشيف':'الأرشيف: '+arch.length+' مهمة منتهية سابقًا')+'</button>':'')
       +'</section>';
   }
@@ -1450,7 +1454,7 @@ function unlinkGoals(src){S.goals.forEach(g=>{if(g.src===src){g.current=goalVal(
 const MF=new Intl.DateTimeFormat('ar-u-nu-latn',{month:'long',year:'numeric'});
 function calDayPanel(k){
   const d=parseKey(k), j=S.journal[k];
-  const dueT=S.tasks.filter(t=>!t.daily&&!t.ex&&!t.must&&t.due===k);
+  const dueT=S.tasks.filter(t=>!t.daily&&!t.ex&&!t.must&&t.status!=='backlog'&&t.due===k);
   const doneT=S.tasks.filter(t=>!t.daily&&!t.ex&&t.doneAt&&dkey(new Date(t.doneAt))===k&&t.due!==k);
   const hab=S.habits.filter(h=>h.done[k]);
   return '<div class="col-side"><section class="panel"><div class="sec-h"><div><h3>'+esc(GF.format(d))+'</h3><p class="muted" style="font-size:13px">'+esc(hijri(d))+'</p></div><button class="btn" data-act="task-new" data-due="'+k+'">'+ic('plus',14)+' مهمة</button></div>'
@@ -1467,7 +1471,7 @@ function viewCalendar(){
   for(const t of S.tasks){
     if(t.daily||t.ex) continue;
     if(t.doneAt){const k=dkey(new Date(t.doneAt));done[k]=(done[k]||0)+1;}
-    if(t.due&&!t.must&&t.status!=='done'&&t.status!=='missed') due[t.due]=(due[t.due]||0)+1;
+    if(t.due&&!t.must&&t.status!=='done'&&t.status!=='missed'&&t.status!=='backlog') due[t.due]=(due[t.due]||0)+1;
   }
   const sat=addDays(first,-lead); let cells='';
   for(let i=0;i<7;i++) cells+='<div class="wd">'+esc(WD.format(addDays(sat,i)))+'</div>';
@@ -1782,7 +1786,8 @@ document.addEventListener('input',e=>{
 document.addEventListener('submit',e=>{
   if(e.target.dataset&&e.target.dataset.form==='quick'){
     e.preventDefault(); const i=$('#quickTitle'), v=i.value.trim(); if(!v) return;
-    newTask({title:v,period:PERIODS.some(p=>p.k===UI.period)?UI.period:'',cat:UI.cat!=='all'?UI.cat:'personal'});
+    const planned=PERIODS.some(p=>p.k===UI.period);
+    newTask({title:v,period:planned?UI.period:'',status:planned?'todo':'backlog',cat:UI.cat!=='all'?UI.cat:'personal'});
     save(); render(); const n=$('#quickTitle'); if(n) n.focus();
   }
 });

@@ -1,4 +1,4 @@
-const V = 'waqti-v6';
+const V = 'waqti-v7';
 const FONTS = V + '-fonts';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './config.js', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 
