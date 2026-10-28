@@ -156,8 +156,8 @@ textarea{resize:vertical;min-height:70px}
 .filters .fchips{display:flex;flex-wrap:wrap;gap:6px;flex:1 1 100%}
 .fc{padding:4px 12px;border-radius:999px;border:1px solid var(--line);background:var(--surface);font-size:13px}
 .fc.on{background:var(--accent);border-color:transparent;color:var(--on-accent)}
-.later-bar{margin-bottom:12px}
-.later-bar .fc{display:inline-flex;align-items:center;gap:6px}
+.fbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:12px;font-size:13px}
+.col .sub-h{margin:6px 4px 0}
 .filters select,.filters input{width:auto;min-width:150px;flex:1 1 150px;max-width:260px}
 .board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;align-items:start}
 .col{background:var(--surface2);border-radius:12px;padding:10px;display:grid;gap:10px;align-content:start;min-height:140px}
@@ -554,7 +554,7 @@ function persist(){
   return true;
 }
 function save(){persist();scheduleSync();}
-const UI={view:'dashboard',period:'all',cat:'all',proj:'all',q:'',later:false,archive:false,archN:50,range:7,calM:'',calSel:'',jday:''};
+const UI={view:'dashboard',period:'all',cat:'all',proj:'all',q:'',fpanel:false,archive:false,archN:50,range:7,calM:'',calSel:'',jday:''};
 const TS={loading:true,err:null};
 let DAYS={}, swReg=null, deferredInstall=null, EDIT=null;
 const FIRED=new Set();
@@ -651,11 +651,14 @@ function availMin(p){
 const taskById=id=>S.tasks.find(t=>t.id===id);
 const todayKey=()=>dkey(new Date());
 const isToday=t=>!t.daily&&(t.status==='todo'||t.status==='doing')&&!!t.period&&(!t.due||t.due<=todayKey());
-/* مهمة «قيد الانتظار» موعدها بعد اليوم: تُخفى من اللوحة حتى يحلّ يومها (زر «المجدولة» يُظهرها). «جاري» تبقى ظاهرة لأنها بدأت فعلًا */
-const isLater=t=>t.status==='todo'&&!!t.due&&t.due>todayKey();
+/* اللوحة تعرض عمل اليوم فقط (قيد الانتظار/جاري/منتهي). مهمة «قيد الانتظار» موعدها بعد اليوم تُعرض في عمود «لاحقًا»
+   حتى يحلّ يومها، فلا شيء يختفي. «جاري» تبقى في مكانها لأنها بدأت فعلًا */
+const futureDue=t=>!!t.due&&t.due>todayKey();
+const isLater=t=>t.status==='todo'&&futureDue(t);
+const colOf=t=>isLater(t)?'backlog':t.status;
 /* مهمة منتهية متكررة موعد نسختها التالية لم يحلّ بعد، فلم تُولَّد (يعرضها التقويم، ويسلّمها deleteTask لنسختها عند الحذف) */
 const pendingRepeat=t=>t.status==='done'&&!!t.nextDue&&!t.nextId&&!t.daily&&!t.ex;
-const laterToast=t=>{if(UI.view==='board'&&!UI.later&&isLater(t)) toast('المهمة مجدولة ليوم '+t.due+' وتظهر في اللوحة حين يحلّ يومها');};
+const laterToast=t=>{if(UI.view==='board'&&isLater(t)) toast('موعدها '+t.due+': تظهر في «لاحقًا» حتى يحلّ يومها');};
 function taskSpent(t){return (t.spent||0)+((S.timer&&S.timer.taskId===t.id)?(Date.now()-S.timer.startedAt)/1000:0);}
 function plannedMin(k){return S.tasks.filter(t=>isToday(t)&&t.period===k).reduce((a,t)=>a+Math.max(0,(t.est||0)-taskSpent(t)/60),0);}
 function newTask(p){
@@ -705,6 +708,13 @@ function setStatus(id,st){
     toast('أحسنت، أُنجزت: '+t.title+(t.nextDue&&!t.nextId?' · تتكرر يوم '+t.nextDue:''));
   }else{ if(t.status==='done') unspawnRepeat(t); if(st==='backlog') releaseTask(id); t.status=st; t.doneAt=null; if(st==='todo') laterToast(t); }
   save(); render();
+}
+/* «لليوم»: تجعل موعد المهمة اليوم وتنقلها إلى «قيد الانتظار» */
+function toToday(id){
+  const t=taskById(id); if(!t) return;
+  t.due=todayKey();
+  if(t.status!=='todo') setStatus(id,'todo'); else{save();render();}
+  toast('نُقلت إلى اليوم: '+t.title);
 }
 /* فك ارتباط المهمة بالمؤقتات قبل حذفها. إن كانت داخل جلسة بومودورو جارية تكمل الجلسة كتركيز عام حتى لا يضيع وقتها */
 function releaseTask(id){
@@ -1127,14 +1137,15 @@ function boardMatch(t){
   if(UI.q&&!((t.title+' '+(t.notes||'')).includes(UI.q))) return false;
   return true;
 }
-const filtered=()=>S.tasks.filter(t=>boardMatch(t)&&(UI.later||!isLater(t)));
 function cardHTML(t){
   const run=S.timer&&S.timer.taskId===t.id, spent=taskSpent(t);
   const pr=PERIODS.find(p=>p.k===t.period), late=t.due&&t.due<todayKey()&&t.status!=='done'&&t.status!=='backlog';
   const sd=(t.subs||[]).filter(s=>s.d).length, st=(t.subs||[]).length;
   const pct=t.est?Math.min(100,spent/60/t.est*100):0;
+  const dated=futureDue(t)&&(t.status==='todo'||t.status==='backlog');
   let next='';
-  if(t.status==='backlog') next='<button class="btn" data-act="task-status" data-id="'+t.id+'" data-st="todo">للانتظار</button>';
+  if(dated) next='<button class="btn" data-act="task-today" data-id="'+t.id+'">لليوم</button>';
+  else if(t.status==='backlog') next='<button class="btn" data-act="task-status" data-id="'+t.id+'" data-st="todo">للانتظار</button>';
   else if(t.status==='todo') next='<button class="btn" data-act="task-status" data-id="'+t.id+'" data-st="doing">ابدأ</button>';
   else if(t.status==='doing') next='<button class="btn primary" data-act="task-status" data-id="'+t.id+'" data-st="done">'+ic('check',14)+' تم</button>';
   else next='<button class="btn ghost" data-act="task-status" data-id="'+t.id+'" data-st="todo">إرجاع</button>';
@@ -1154,8 +1165,8 @@ function cardHTML(t){
     +(t.est?'<div class="c-prog"><div class="meter" style="--pc:var(--accent)"><i style="width:'+pct.toFixed(0)+'%"></i></div><span>الفعلي <span class="num" data-live="task" data-id="'+t.id+'">'+fmtDur(spent)+'</span> من المتوقع <span class="num">'+fmtMin(t.est)+'</span></span></div>':'')
     +'<div class="c-act">'+next+'<span class="grow"></span>'
       +(!t.est&&(spent>0||run)?'<span class="c-time num" data-live="task" data-id="'+t.id+'">'+fmtDur(spent)+'</span>':'')
-      +(t.status!=='done'&&t.status!=='backlog'?'<button class="iconbtn'+(run?' on':'')+'" data-act="task-timer" data-id="'+t.id+'" aria-label="'+(run?'إيقاف':'بدء')+' المؤقت">'+(run?ic('pause',16):ic('play',16))+'</button>':'')
-      +(t.status==='todo'?'<button class="iconbtn" data-act="task-status" data-id="'+t.id+'" data-st="backlog" aria-label="تأجيل إلى لاحقًا" title="لاحقًا">'+ic('later',16)+'</button>':'')
+      +(t.status!=='done'&&colOf(t)!=='backlog'?'<button class="iconbtn'+(run?' on':'')+'" data-act="task-timer" data-id="'+t.id+'" aria-label="'+(run?'إيقاف':'بدء')+' المؤقت">'+(run?ic('pause',16):ic('play',16))+'</button>':'')
+      +(t.status==='todo'&&!isLater(t)?'<button class="iconbtn" data-act="task-status" data-id="'+t.id+'" data-st="backlog" aria-label="تأجيل إلى لاحقًا" title="لاحقًا">'+ic('later',16)+'</button>':'')
       +'<button class="iconbtn" data-act="task-edit" data-id="'+t.id+'" aria-label="تعديل">'+ic('edit',16)+'</button></div></article>';
 }
 /* عمود «منتهي» يعرض ما أُنجز اليوم فقط، وما أُنجز قبل ذلك ينتقل إلى الأرشيف أسفل اللوحة */
@@ -1174,34 +1185,50 @@ function archiveHTML(arch){
     +(arch.length>UI.archN?'<button class="link" data-act="archive-more">عرض المزيد ('+(arch.length-UI.archN)+')</button>':'')
     +'</section>';
 }
+/* عمود «لاحقًا»: المهام بموعد قادم أولًا مقسّمة بعناوين (غدًا / هذا الأسبوع / بعد ذلك) ثم الأفكار بلا موعد.
+   العناوين تظهر فقط إن وُجدت مهمة بموعد، فيبقى العمود كما كان إن لم يحتوِ إلا أفكارًا */
+function laterBody(items){
+  const byPrio=(a,b)=>PO[a.prio]-PO[b.prio]||a.created-b.created;
+  const base=startOfDay(new Date()), tm=dkey(addDays(base,1)), wk=dkey(addDays(base,7));
+  const dated=items.filter(futureDue).sort((a,b)=>a.due<b.due?-1:a.due>b.due?1:byPrio(a,b));
+  const groups=[['غدًا',dated.filter(t=>t.due===tm)],['هذا الأسبوع',dated.filter(t=>t.due>tm&&t.due<=wk)],['بعد ذلك',dated.filter(t=>t.due>wk)],['أفكار بلا موعد',items.filter(t=>!futureDue(t)).sort(byPrio)]].filter(g=>g[1].length);
+  return groups.map(g=>(dated.length?'<h4 class="sub-h">'+g[0]+' <span class="num">('+g[1].length+')</span></h4>':'')+g[1].map(cardHTML).join('')).join('');
+}
 function colsHTML(){
-  const list=filtered(); let h='', arch=[];
+  const list=S.tasks.filter(boardMatch); let h='', arch=[];
   for(const st of ['backlog','todo','doing','done']){
-    let items=list.filter(t=>t.status===st);
+    let items=list.filter(t=>colOf(t)===st);
     if(st==='done'){arch=items.filter(t=>!isDoneToday(t));items=items.filter(isDoneToday).sort((a,b)=>b.doneAt-a.doneAt);}
-    else items.sort((a,b)=>isLater(a)-isLater(b)||(isLater(a)&&a.due!==b.due?(a.due<b.due?-1:1):0)||PO[a.prio]-PO[b.prio]||a.created-b.created);
+    else items.sort((a,b)=>PO[a.prio]-PO[b.prio]||a.created-b.created);
     h+='<section class="col" data-status="'+st+'" aria-label="'+STAT[st]+'"><div class="col-h"><h3>'+(st==='done'?'منتهي اليوم':STAT[st])+'<span class="cnt num">'+items.length+'</span></h3>'
       +(st!=='done'?'<button class="iconbtn sm" data-act="task-new" data-status="'+st+'" aria-label="مهمة جديدة في '+STAT[st]+'">'+ic('plus',14)+'</button>':'')+'</div>'
-      +(items.length?items.map(cardHTML).join(''):'<div class="empty">'+(st==='backlog'?'أفكار ومهام للمستقبل. انقلها إلى «قيد الانتظار» حين تصير جاهزة':st==='todo'?'اسحب مهمة إلى هنا أو أضف جديدة':st==='doing'?'ما في مهمة جارية الآن':'لم تُنجز شيئًا اليوم بعد')+'</div>')
+      +(items.length?(st==='backlog'?laterBody(items):items.map(cardHTML).join('')):'<div class="empty">'+(st==='backlog'?'أفكار ومهام للمستقبل. ما له موعد قادم يبقى هنا حتى يحلّ يومه':st==='todo'?'اسحب مهمة إلى هنا أو أضف جديدة':st==='doing'?'ما في مهمة جارية الآن':'لم تُنجز شيئًا اليوم بعد')+'</div>')
       +((st==='done'&&arch.length)?'<button class="link" data-act="archive">'+(UI.archive?'إخفاء الأرشيف':'الأرشيف: '+arch.length+' مهمة منتهية سابقًا')+'</button>':'')
       +'</section>';
   }
-  return laterBarHTML()+'<div class="board">'+h+'</div>'+archiveHTML(arch);
+  return activeFiltersHTML()+'<div class="board">'+h+'</div>'+archiveHTML(arch);
 }
-/* زر «المجدولة» داخل #cols ليتحدّث عدده مع الفلاتر والبحث */
-function laterBarHTML(){
-  const n=S.tasks.filter(t=>boardMatch(t)&&isLater(t)).length;
-  if(!n&&!UI.later) return '';
-  return '<div class="later-bar"><button class="fc'+(UI.later?' on':'')+'" data-act="f-later" aria-pressed="'+UI.later+'">'+ic('later',14)+' المجدولة لاحقًا <span class="num">'+n+'</span></button></div>';
+/* الفلاتر المفعّلة تظهر في شريط واحد داخل #cols (يتحدّث مع كل تغيير) حتى لا تضيع مهام بسبب فلتر منسي */
+function activeFiltersHTML(){
+  const a=[], per=PERIODS.find(p=>p.k===UI.period), pr=projById(UI.proj);
+  if(UI.period!=='all') a.push('الفترة: '+(UI.period==='inbox'?'الوارد':per?per.name:UI.period));
+  if(UI.cat!=='all') a.push('التصنيف: '+catName(UI.cat));
+  if(UI.proj!=='all') a.push('المشروع: '+(UI.proj==='none'?'بدون مشروع':pr?pr.name:'محذوف'));
+  if(UI.q) a.push('بحث: «'+UI.q+'»');
+  if(!a.length) return '';
+  return '<div class="fbar"><span class="muted">فلاتر مفعّلة:</span>'+a.map(x=>'<span class="chip">'+esc(x)+'</span>').join('')+'<button class="link" data-act="f-clear">مسح الكل</button></div>';
 }
+const fbtnHTML=()=>'تصفية'+((UI.cat!=='all')+(UI.proj!=='all')?' <span class="num">('+((UI.cat!=='all')+(UI.proj!=='all'))+')</span>':'');
 function viewBoard(){
   const chips=[['all','الكل'],['inbox','الوارد']].concat(PERIODS.map(p=>[p.k,p.name]));
   return '<div class="pagehead"><h2>لوحة المهام</h2></div>'
     +'<form class="quick" data-form="quick"><input type="text" id="quickTitle" placeholder="اكتب مهمة جديدة واضغط Enter" aria-label="مهمة جديدة" autocomplete="off"><button class="btn primary" type="submit">'+ic('plus',16)+' أضف</button><button type="button" class="btn" data-act="task-new">بالتفصيل</button></form>'
     +'<div class="filters"><div class="fchips">'+chips.map(c=>'<button class="fc'+(UI.period===c[0]?' on':'')+'" data-act="f-period" data-v="'+c[0]+'">'+c[1]+'</button>').join('')+'</div>'
+    +'<input type="text" id="searchQ" placeholder="بحث" aria-label="بحث" value="'+esc(UI.q)+'">'
+    +'<button type="button" class="btn" id="fbtn" data-act="f-panel" aria-expanded="'+UI.fpanel+'" aria-controls="fpanel">'+fbtnHTML()+'</button></div>'
+    +'<div class="filters" id="fpanel"'+(UI.fpanel?'':' hidden')+'>'
     +'<select data-change="f-cat" aria-label="التصنيف"><option value="all">كل التصنيفات</option>'+catKeys().map(k=>'<option value="'+esc(k)+'"'+(UI.cat===k?' selected':'')+'>'+esc(catName(k))+'</option>').join('')+'</select>'
-    +'<select data-change="f-proj" aria-label="المشروع"><option value="all">كل المشاريع</option><option value="none"'+(UI.proj==='none'?' selected':'')+'>بدون مشروع</option>'+S.projects.filter(p=>!p.archived).map(p=>'<option value="'+p.id+'"'+(UI.proj===p.id?' selected':'')+'>'+esc(p.name)+'</option>').join('')+'</select>'
-    +'<input type="text" id="searchQ" placeholder="بحث" aria-label="بحث" value="'+esc(UI.q)+'"></div>'
+    +'<select data-change="f-proj" aria-label="المشروع"><option value="all">كل المشاريع</option><option value="none"'+(UI.proj==='none'?' selected':'')+'>بدون مشروع</option>'+S.projects.filter(p=>!p.archived).map(p=>'<option value="'+p.id+'"'+(UI.proj===p.id?' selected':'')+'>'+esc(p.name)+'</option>').join('')+'</select></div>'
     +'<div id="cols">'+colsHTML()+'</div>';
 }
 
@@ -1764,7 +1791,9 @@ const ACT={
   'sub-add':()=>{const w=document.createElement('div');w.innerHTML=subRow({t:'',d:false});$('#subList').appendChild(w.firstChild);const r=$$('#subList .st');r[r.length-1].focus();},
   'sub-del':b=>b.closest('.subrow').remove(),
   'f-period':b=>{UI.period=b.dataset.v;render();},
-  'f-later':()=>{UI.later=!UI.later;$('#cols').innerHTML=colsHTML();},
+  'f-panel':b=>{UI.fpanel=!UI.fpanel;$('#fpanel').hidden=!UI.fpanel;b.setAttribute('aria-expanded',UI.fpanel);},
+  'f-clear':()=>{UI.period='all';UI.cat='all';UI.proj='all';UI.q='';render();},
+  'task-today':b=>toToday(b.dataset.id),
   'archive':()=>{UI.archive=!UI.archive;UI.archN=50;$('#cols').innerHTML=colsHTML();const a=$('#arch');if(a)a.scrollIntoView({block:'start'});},
   'archive-more':()=>{UI.archN+=50;$('#cols').innerHTML=colsHTML();},
   'del-examples':()=>{S.tasks.filter(t=>t.ex).forEach(t=>releaseTask(t.id));S.tasks=S.tasks.filter(t=>!t.ex);save();render();},
@@ -1808,11 +1837,11 @@ const CH={
     else if(p.indexOf('pomo.')===0) syncPomoIdle();
     renderTop();
   },
-  'f-cat':el=>{UI.cat=el.value;$('#cols').innerHTML=colsHTML();},
+  'f-cat':el=>{UI.cat=el.value;$('#cols').innerHTML=colsHTML();$('#fbtn').innerHTML=fbtnHTML();},
   'g-src':()=>goalSrcUI(),
   'cat-color':el=>{const c=customCat(el.dataset.id);if(c){c.color=safeColor(el.value);save();}},
   'cat-name':el=>{const c=customCat(el.dataset.id),n=el.value.trim();if(c&&n){c.name=n;save();}else if(c)el.value=c.name;},
-  'f-proj':el=>{UI.proj=el.value;$('#cols').innerHTML=colsHTML();},
+  'f-proj':el=>{UI.proj=el.value;$('#cols').innerHTML=colsHTML();$('#fbtn').innerHTML=fbtnHTML();},
   'pomo-task':el=>{S.pomo.taskId=el.value;if(S.pomo.running&&S.pomo.mode==='work')startTimer(el.value,'pomo');save();renderTop();}
 };
 document.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(b&&ACT[b.dataset.act]) ACT[b.dataset.act](b,e);});
@@ -1852,7 +1881,11 @@ document.addEventListener('dragover',e=>{const col=e.target.closest&&e.target.cl
 document.addEventListener('drop',e=>{
   const col=e.target.closest&&e.target.closest('.col[data-status]'); if(!col) return;
   e.preventDefault(); const id=e.dataTransfer.getData('text/plain');
-  col.classList.remove('over'); if(id&&taskById(id)) setStatus(id,col.dataset.status);
+  col.classList.remove('over');
+  const t=taskById(id), st=col.dataset.status; if(!t||colOf(t)===st) return;
+  /* سحب مهمة موعدها قادم إلى «قيد الانتظار» يعني أنها صارت لليوم: نسأل ثم نصفّر موعدها */
+  if(st==='todo'&&futureDue(t)&&t.status!=='done'){if(confirm('موعد «'+t.title+'» هو '+t.due+'. هل تنقلها إلى اليوم؟')) toToday(id);}
+  else setStatus(id,st);
 });
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstall=e;if(UI.view==='settings')render();});
 window.addEventListener('online',()=>reloadTimes());
