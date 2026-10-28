@@ -156,6 +156,8 @@ textarea{resize:vertical;min-height:70px}
 .filters .fchips{display:flex;flex-wrap:wrap;gap:6px;flex:1 1 100%}
 .fc{padding:4px 12px;border-radius:999px;border:1px solid var(--line);background:var(--surface);font-size:13px}
 .fc.on{background:var(--accent);border-color:transparent;color:var(--on-accent)}
+.later-bar{margin-bottom:12px}
+.later-bar .fc{display:inline-flex;align-items:center;gap:6px}
 .filters select,.filters input{width:auto;min-width:150px;flex:1 1 150px;max-width:260px}
 .board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;align-items:start}
 .col{background:var(--surface2);border-radius:12px;padding:10px;display:grid;gap:10px;align-content:start;min-height:140px}
@@ -552,7 +554,7 @@ function persist(){
   return true;
 }
 function save(){persist();scheduleSync();}
-const UI={view:'dashboard',period:'all',cat:'all',proj:'all',q:'',archive:false,archN:50,range:7,calM:'',calSel:'',jday:''};
+const UI={view:'dashboard',period:'all',cat:'all',proj:'all',q:'',later:false,archive:false,archN:50,range:7,calM:'',calSel:'',jday:''};
 const TS={loading:true,err:null};
 let DAYS={}, swReg=null, deferredInstall=null, EDIT=null;
 const FIRED=new Set();
@@ -649,36 +651,59 @@ function availMin(p){
 const taskById=id=>S.tasks.find(t=>t.id===id);
 const todayKey=()=>dkey(new Date());
 const isToday=t=>!t.daily&&(t.status==='todo'||t.status==='doing')&&!!t.period&&(!t.due||t.due<=todayKey());
+/* مهمة «قيد الانتظار» موعدها بعد اليوم: تُخفى من اللوحة حتى يحلّ يومها (زر «المجدولة» يُظهرها). «جاري» تبقى ظاهرة لأنها بدأت فعلًا */
+const isLater=t=>t.status==='todo'&&!!t.due&&t.due>todayKey();
+/* مهمة منتهية متكررة موعد نسختها التالية لم يحلّ بعد، فلم تُولَّد (يعرضها التقويم، ويسلّمها deleteTask لنسختها عند الحذف) */
+const pendingRepeat=t=>t.status==='done'&&!!t.nextDue&&!t.nextId&&!t.daily&&!t.ex;
+const laterToast=t=>{if(UI.view==='board'&&!UI.later&&isLater(t)) toast('المهمة مجدولة ليوم '+t.due+' وتظهر في اللوحة حين يحلّ يومها');};
 function taskSpent(t){return (t.spent||0)+((S.timer&&S.timer.taskId===t.id)?(Date.now()-S.timer.startedAt)/1000:0);}
 function plannedMin(k){return S.tasks.filter(t=>isToday(t)&&t.period===k).reduce((a,t)=>a+Math.max(0,(t.est||0)-taskSpent(t)/60),0);}
 function newTask(p){
   const t=Object.assign({id:uid(),title:'',notes:'',cat:'personal',prio:'normal',period:'',due:'',est:0,repeat:'none',status:'todo',subs:[],spent:0,pomos:0,created:Date.now(),doneAt:null,ex:false,projectId:'',daily:false,tplId:'',must:false,missed:false,remind:''},p);
   S.tasks.push(t); return t;
 }
-/* المهمة المتكررة تولّد نسختها التالية مرة واحدة فقط (nextId)، وموعد النسخة دائمًا بعد اليوم حتى لا تولد متأخرة.
-   إرجاع المهمة عن «منتهي» يحذف النسخة التالية إن لم تُمس منذ توليدها (nextH بصمتها وقت التوليد) */
+/* المهمة المتكررة لا تولّد نسختها التالية عند الإنجاز، بل تحفظ موعدها فقط (nextDue، وهو دائمًا بعد اليوم)،
+   وتولّدها ensureRepeats مرة واحدة (nextId) حين يحلّ ذلك اليوم حتى لا تظهر في اللوحة قبل أوانها.
+   إرجاع المهمة عن «منتهي» يلغي الموعد، ويحذف النسخة إن وُلدت ولم تُمس منذ توليدها (nextH بصمتها وقت التوليد) */
 function spawnRepeat(t){
-  if(!t.repeat||t.repeat==='none'||t.nextId) return;
+  if(!t.repeat||t.repeat==='none'||t.nextId||t.nextDue) return;
   const step=t.repeat==='daily'?1:7, today=startOfDay(new Date());
   let nxt=addDays(t.due?parseKey(t.due):today,step);
   while(nxt<=today) nxt=addDays(nxt,step);
-  const c=Object.assign({},t,{id:uid(),status:'todo',spent:0,pomos:0,doneAt:null,ex:false,created:Date.now(),due:dkey(nxt),nextId:'',nextH:'',subs:(t.subs||[]).map(s=>({t:s.t,d:false}))});
-  S.tasks.push(c); t.nextId=c.id; t.nextH=hsh(c);
+  t.nextDue=dkey(nxt);
 }
 function unspawnRepeat(t){
-  if(!t.nextId) return;
+  if(!t.nextId){t.nextDue='';return;}
   const c=taskById(t.nextId);
   if(c&&hsh(c)!==t.nextH) return;
   if(c){releaseTask(c.id);S.tasks=S.tasks.filter(x=>x!==c);}
-  t.nextId=''; t.nextH='';
+  t.nextId=''; t.nextH=''; t.nextDue='';
+}
+/* معرّف النسخة ثابت (جذر السلسلة~الموعد) فلا تتكرر إن ولّدها جهازان، وتُعلَّم بـ _a كالمهام اليومية فيغلبها أي تعديل حقيقي */
+function spawnCopy(t,ids){
+  const rid=t.rid||t.id, iid=rid+'~'+t.nextDue;
+  if(ids.has(iid)) t.nextH='';
+  else{
+    const c=Object.assign({},t,{id:iid,rid:rid,status:'todo',spent:0,pomos:0,doneAt:null,ex:false,created:Date.now(),due:t.nextDue,nextId:'',nextH:'',nextDue:'',_u:0,subs:(t.subs||[]).map(s=>({t:s.t,d:false}))});
+    c._a=hsh(c); S.tasks.push(c); ids.add(iid); t.nextH=hsh(c);
+  }
+  t.nextId=iid;
+}
+function ensureRepeats(){
+  const tk=todayKey(), ids=new Set(S.tasks.map(t=>t.id)); let ch=false;
+  for(const t of S.tasks.slice()){
+    if(!pendingRepeat(t)||t.nextDue>tk) continue;
+    spawnCopy(t,ids); ch=true;
+  }
+  return ch;
 }
 function setStatus(id,st){
   const t=taskById(id); if(!t||t.status===st) return;
   if(st==='done'){
     if(S.timer&&S.timer.taskId===id){ if(S.timer.by==='pomo') pomoPause(); else stopTimer(); }
     t.status='done'; t.doneAt=Date.now(); spawnRepeat(t);
-    toast('أحسنت، أُنجزت: '+t.title);
-  }else{ if(t.status==='done') unspawnRepeat(t); if(st==='backlog') releaseTask(id); t.status=st; t.doneAt=null; }
+    toast('أحسنت، أُنجزت: '+t.title+(t.nextDue&&!t.nextId?' · تتكرر يوم '+t.nextDue:''));
+  }else{ if(t.status==='done') unspawnRepeat(t); if(st==='backlog') releaseTask(id); t.status=st; t.doneAt=null; if(st==='todo') laterToast(t); }
   save(); render();
 }
 /* فك ارتباط المهمة بالمؤقتات قبل حذفها. إن كانت داخل جلسة بومودورو جارية تكمل الجلسة كتركيز عام حتى لا يضيع وقتها */
@@ -691,6 +716,8 @@ function releaseTask(id){
 }
 function deleteTask(id){
   releaseTask(id);
+  const t=taskById(id);
+  if(t&&pendingRepeat(t)) spawnCopy(t,new Set(S.tasks.map(x=>x.id))); // حذف المنتهية لا يوقف التكرار: تُولَّد نسختها الآن (مخفية في «المجدولة» حتى يومها)
   S.tasks=S.tasks.filter(t=>t.id!==id); save(); render();
 }
 function seed(){
@@ -721,7 +748,8 @@ function projMinutes(pid,from,to){
 }
 /* تنشئ نسخة اليوم من كل مهمة يومية، وتسجّل «فائتة» لكل يوم مضى بلا إنجاز، بما فيها الأيام التي لم يُفتح فيها التطبيق
    (من أول يوم للمهمة، وبحد أقصى سنة). ما تغيّره هذه الدالة تلقائيًا يُعلَّم بـ _a حتى لا يغلب في المزامنة تعديلًا حقيقيًا من جهاز آخر.
-   الأيام الماضية لا تُملأ قبل أول سحب من السحابة، لأن الجهاز الآخر قد يكون أنجزها أو أوقف المهمة */
+   الأيام الماضية لا تُملأ قبل أول سحب من السحابة، لأن الجهاز الآخر قد يكون أنجزها أو أوقف المهمة.
+   وتولّد أيضًا نسخ المهام المتكررة التي حلّ موعدها (ensureRepeats) */
 function ensureDaily(){
   const tk=todayKey(), ids=new Set(S.tasks.map(t=>t.id)), first={}, back=CLOUD.ready; let ch=false;
   for(const t of S.tasks){
@@ -739,6 +767,7 @@ function ensureDaily(){
       x._a=hsh(x); S.tasks.push(x); ids.add(iid); ch=true;
     }
   }
+  if(ensureRepeats()) ch=true;
   if(ch) save();
 }
 function mustStreak(){
@@ -1024,6 +1053,7 @@ function pItem(t){
     +(t.est?'<span class="pc-r num">'+fmtMin(t.est)+'</span>':'')
     +(done?'':'<button class="iconbtn sm'+(run?' on':'')+'" data-act="task-timer" data-id="'+t.id+'" aria-label="'+(run?'إيقاف':'بدء')+' المؤقت">'+(run?ic('pause',14):ic('play',14))+'</button>')+'</li>';
 }
+const repItem=t=>'<li class="pt"><span class="pt-title" style="color:var(--muted)">'+esc(t.title)+'</span><span class="chip">تتكرر</span></li>';
 function viewDashboard(){
   const now=new Date(), tk=dkey(now), cp=currentPeriod(now), ps=periodsOn(startOfDay(now));
   const doneToday=S.tasks.filter(t=>t.doneAt&&dkey(new Date(t.doneAt))===tk).length;
@@ -1088,17 +1118,16 @@ function viewDashboard(){
 }
 
 /* ---- كانبان ---- */
-function filtered(){
-  return S.tasks.filter(t=>{
-    if(t.daily) return false;
-    if(UI.proj!=='all'&&(t.projectId||'')!==(UI.proj==='none'?'':UI.proj)) return false;
-    if(UI.period==='inbox'&&t.period) return false;
-    if(UI.period!=='all'&&UI.period!=='inbox'&&t.period!==UI.period) return false;
-    if(UI.cat!=='all'&&t.cat!==UI.cat) return false;
-    if(UI.q&&!((t.title+' '+(t.notes||'')).includes(UI.q))) return false;
-    return true;
-  });
+function boardMatch(t){
+  if(t.daily) return false;
+  if(UI.proj!=='all'&&(t.projectId||'')!==(UI.proj==='none'?'':UI.proj)) return false;
+  if(UI.period==='inbox'&&t.period) return false;
+  if(UI.period!=='all'&&UI.period!=='inbox'&&t.period!==UI.period) return false;
+  if(UI.cat!=='all'&&t.cat!==UI.cat) return false;
+  if(UI.q&&!((t.title+' '+(t.notes||'')).includes(UI.q))) return false;
+  return true;
 }
+const filtered=()=>S.tasks.filter(t=>boardMatch(t)&&(UI.later||!isLater(t)));
 function cardHTML(t){
   const run=S.timer&&S.timer.taskId===t.id, spent=taskSpent(t);
   const pr=PERIODS.find(p=>p.k===t.period), late=t.due&&t.due<todayKey()&&t.status!=='done'&&t.status!=='backlog';
@@ -1150,14 +1179,20 @@ function colsHTML(){
   for(const st of ['backlog','todo','doing','done']){
     let items=list.filter(t=>t.status===st);
     if(st==='done'){arch=items.filter(t=>!isDoneToday(t));items=items.filter(isDoneToday).sort((a,b)=>b.doneAt-a.doneAt);}
-    else items.sort((a,b)=>PO[a.prio]-PO[b.prio]||a.created-b.created);
+    else items.sort((a,b)=>isLater(a)-isLater(b)||(isLater(a)&&a.due!==b.due?(a.due<b.due?-1:1):0)||PO[a.prio]-PO[b.prio]||a.created-b.created);
     h+='<section class="col" data-status="'+st+'" aria-label="'+STAT[st]+'"><div class="col-h"><h3>'+(st==='done'?'منتهي اليوم':STAT[st])+'<span class="cnt num">'+items.length+'</span></h3>'
       +(st!=='done'?'<button class="iconbtn sm" data-act="task-new" data-status="'+st+'" aria-label="مهمة جديدة في '+STAT[st]+'">'+ic('plus',14)+'</button>':'')+'</div>'
       +(items.length?items.map(cardHTML).join(''):'<div class="empty">'+(st==='backlog'?'أفكار ومهام للمستقبل. انقلها إلى «قيد الانتظار» حين تصير جاهزة':st==='todo'?'اسحب مهمة إلى هنا أو أضف جديدة':st==='doing'?'ما في مهمة جارية الآن':'لم تُنجز شيئًا اليوم بعد')+'</div>')
       +((st==='done'&&arch.length)?'<button class="link" data-act="archive">'+(UI.archive?'إخفاء الأرشيف':'الأرشيف: '+arch.length+' مهمة منتهية سابقًا')+'</button>':'')
       +'</section>';
   }
-  return '<div class="board">'+h+'</div>'+archiveHTML(arch);
+  return laterBarHTML()+'<div class="board">'+h+'</div>'+archiveHTML(arch);
+}
+/* زر «المجدولة» داخل #cols ليتحدّث عدده مع الفلاتر والبحث */
+function laterBarHTML(){
+  const n=S.tasks.filter(t=>boardMatch(t)&&isLater(t)).length;
+  if(!n&&!UI.later) return '';
+  return '<div class="later-bar"><button class="fc'+(UI.later?' on':'')+'" data-act="f-later" aria-pressed="'+UI.later+'">'+ic('later',14)+' المجدولة لاحقًا <span class="num">'+n+'</span></button></div>';
 }
 function viewBoard(){
   const chips=[['all','الكل'],['inbox','الوارد']].concat(PERIODS.map(p=>[p.k,p.name]));
@@ -1454,11 +1489,11 @@ function unlinkGoals(src){S.goals.forEach(g=>{if(g.src===src){g.current=goalVal(
 const MF=new Intl.DateTimeFormat('ar-u-nu-latn',{month:'long',year:'numeric'});
 function calDayPanel(k){
   const d=parseKey(k), j=S.journal[k];
-  const dueT=S.tasks.filter(t=>!t.daily&&!t.ex&&!t.must&&t.status!=='backlog'&&t.due===k);
+  const dueT=S.tasks.filter(t=>!t.daily&&!t.ex&&!t.must&&t.status!=='backlog'&&t.due===k), repT=S.tasks.filter(t=>pendingRepeat(t)&&t.nextDue===k);
   const doneT=S.tasks.filter(t=>!t.daily&&!t.ex&&t.doneAt&&dkey(new Date(t.doneAt))===k&&t.due!==k);
   const hab=S.habits.filter(h=>h.done[k]);
   return '<div class="col-side"><section class="panel"><div class="sec-h"><div><h3>'+esc(GF.format(d))+'</h3><p class="muted" style="font-size:13px">'+esc(hijri(d))+'</p></div><button class="btn" data-act="task-new" data-due="'+k+'">'+ic('plus',14)+' مهمة</button></div>'
-    +'<h4 class="sub-h">مستحقة في هذا اليوم</h4>'+(dueT.length?'<ul class="plist">'+dueT.map(pItem).join('')+'</ul>':'<p class="pc-r">لا مهام مستحقة</p>')
+    +'<h4 class="sub-h">مستحقة في هذا اليوم</h4>'+(dueT.length||repT.length?'<ul class="plist">'+dueT.map(pItem).join('')+repT.map(repItem).join('')+'</ul>':'<p class="pc-r">لا مهام مستحقة</p>')
     +(doneT.length?'<h4 class="sub-h">أُنجزت في هذا اليوم</h4><ul class="plist">'+doneT.map(pItem).join('')+'</ul>':'')
     +(hab.length?'<h4 class="sub-h">العادات</h4><div class="chips">'+hab.map(h=>'<span class="chip">✓ '+esc(h.name)+'</span>').join('')+'</div>':'')
     +'<h4 class="sub-h">المذكرة</h4>'+(j&&(j.text||j.mood)?'<p class="jtext">'+(j.mood?MOODS[j.mood]+' ':'')+esc((j.text||'').slice(0,240))+((j.text||'').length>240?'…':'')+'</p>':'<p class="pc-r">لا يوجد تدوين</p>')
@@ -1472,6 +1507,7 @@ function viewCalendar(){
     if(t.daily||t.ex) continue;
     if(t.doneAt){const k=dkey(new Date(t.doneAt));done[k]=(done[k]||0)+1;}
     if(t.due&&!t.must&&t.status!=='done'&&t.status!=='missed'&&t.status!=='backlog') due[t.due]=(due[t.due]||0)+1;
+    if(pendingRepeat(t)) due[t.nextDue]=(due[t.nextDue]||0)+1;
   }
   const sat=addDays(first,-lead); let cells='';
   for(let i=0;i<7;i++) cells+='<div class="wd">'+esc(WD.format(addDays(sat,i)))+'</div>';
@@ -1650,6 +1686,7 @@ function saveTask(){
   }else{t=newTask(data);}
   if(status!==t.status) setStatus(t.id,status);
   if(wantDaily){ensureDaily();toast('أُضيفت مهمة يومية، تتجدد كل يوم');}
+  else laterToast(t);
   save(); $('#dlg').close(); render();
 }
 
@@ -1727,6 +1764,7 @@ const ACT={
   'sub-add':()=>{const w=document.createElement('div');w.innerHTML=subRow({t:'',d:false});$('#subList').appendChild(w.firstChild);const r=$$('#subList .st');r[r.length-1].focus();},
   'sub-del':b=>b.closest('.subrow').remove(),
   'f-period':b=>{UI.period=b.dataset.v;render();},
+  'f-later':()=>{UI.later=!UI.later;$('#cols').innerHTML=colsHTML();},
   'archive':()=>{UI.archive=!UI.archive;UI.archN=50;$('#cols').innerHTML=colsHTML();const a=$('#arch');if(a)a.scrollIntoView({block:'start'});},
   'archive-more':()=>{UI.archN+=50;$('#cols').innerHTML=colsHTML();},
   'del-examples':()=>{S.tasks.filter(t=>t.ex).forEach(t=>releaseTask(t.id));S.tasks=S.tasks.filter(t=>!t.ex);save();render();},
